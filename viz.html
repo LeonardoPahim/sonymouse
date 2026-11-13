@@ -8,12 +8,13 @@
   :root {
     --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
     --grid: #e1e0d9; --axis: #c3c2b7; --yaw: #2a78d6; --pitch: #eb6834; --roll: #1baf7a;
-    --good: #0ca30c; --critical: #d03b3b;
+    --good: #0ca30c; --critical: #d03b3b; --head: #d6d0c4; --bust: #e9e6df; --bud: #262624;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
       --grid: #2c2c2a; --axis: #383835; --yaw: #3987e5; --pitch: #d95926; --roll: #199e70;
+      --head: #a39f97; --bust: #4a4946; --bud: #f0efec;
     }
   }
   * { box-sizing: border-box; }
@@ -92,7 +93,7 @@
   <section class="row">
     <div class="card">
       <h2>Head orientation</h2>
-      <p class="sub">Seen from behind your right shoulder. The line from the nose is where you are facing.</p>
+      <p class="sub">Shown as in a mirror. The shoulders stay facing where you last recentered.</p>
       <canvas id="head"></canvas>
     </div>
     <div class="card">
@@ -148,63 +149,139 @@ function fit(c) {
 }
 const sgn = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1);
 
-function rot(q, v) {
-  const [w, x, y, z] = q, [a, b, c] = v;
-  const tx = 2 * (y * c - z * b), ty = 2 * (z * a - x * c), tz = 2 * (x * b - y * a);
-  return [a + w * tx + (y * tz - z * ty), b + w * ty + (z * tx - x * tz), c + w * tz + (x * ty - y * tx)];
+const HEAD_VS = `#version 300 es
+in vec3 aPos;
+uniform mat3 uRot, uCam; uniform vec3 uScale, uOffset, uPos; uniform vec2 uF;
+out vec3 vV;
+void main() {
+  vec3 c = uCam * (uRot * (aPos * uScale + uOffset) + uPos);
+  vec3 v = vec3(c.x, c.z + 0.38, c.y);
+  float w = 7.0 - v.z;
+  vV = v;
+  gl_Position = vec4(v.x * uF.x, v.y * uF.y, -v.z / 4.0 * w, w);
+}`;
+const HEAD_FS = `#version 300 es
+precision highp float;
+in vec3 vV;
+uniform vec3 uColor;
+out vec4 o;
+void main() {
+  vec3 n = normalize(cross(dFdx(vV), dFdy(vV)));
+  if (n.z < 0.0) n = -n;
+  float d = max(dot(n, normalize(vec3(-0.45, 0.6, 0.66))), 0.0);
+  o = vec4(uColor * (0.52 + 0.58 * d), 1.0);
+}`;
+
+function sphere(levels) {
+  const t = (1 + Math.sqrt(5)) / 2, unit = v => { const n = Math.hypot(...v); return v.map(x => x / n); };
+  const v = [[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(unit);
+  let faces = [[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+               [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]].map(f => f.map(i => v[i]));
+  for (let i = 0; i < levels; i++) {
+    faces = faces.flatMap(([a, b, c]) => {
+      const m = (p, q) => unit([p[0] + q[0], p[1] + q[1], p[2] + q[2]]);
+      const ab = m(a, b), bc = m(b, c), ca = m(c, a);
+      return [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]];
+    });
+  }
+  return faces;
 }
-const AZ = -28 * Math.PI / 180, EL = 22 * Math.PI / 180;
-function camera(v, cx, cy, scale) {
-  const x = v[0] * Math.cos(AZ) - v[1] * Math.sin(AZ), y = v[0] * Math.sin(AZ) + v[1] * Math.cos(AZ), z = v[2];
-  const depth = y * Math.cos(EL) - z * Math.sin(EL), up = z * Math.cos(EL) + y * Math.sin(EL);
-  const p = 4 / (4 + depth);
-  return [cx + x * scale * p, cy - up * scale * p, depth];
+function skull([x, y, z]) {
+  let X = x * 0.78, Y = y * 0.92, Z = z * 1.02;
+  if (z < 0) {
+    const t = Math.pow(-z, 1.6);
+    X *= 1 - 0.38 * t;
+    Y *= 1 - (y < 0 ? 0.3 : 0.1) * t;
+    Z *= 1 + 0.12 * Math.max(0, y);
+  }
+  if (y > 0) {
+    const bump = (a, b, sa, sb) => Math.exp(-(a * a) / (sa * sa) - (b * b) / (sb * sb));
+    const down = Math.max(0, Math.min(1, (0.2 - Z) / 0.4));
+    Y += 0.25 * bump(X, Z + 0.14, 0.06 + 0.07 * down, Z > -0.14 ? 0.26 : 0.07) * y;
+    Y -= 0.022 * bump(X, Z + 0.43, 0.17, 0.022) * y;
+    Y += 0.05 * bump(X, Z + 0.72, 0.2, 0.12) * y;
+    Y -= 0.08 * bump(Math.abs(X) - 0.3, Z - 0.13, 0.13, 0.08) * y;
+    Y += 0.05 * bump(0, Z - 0.3, 1, 0.07) * Math.max(0, 1 - Math.abs(X) / 0.6) * y;
+  }
+  return [X, Y, Z];
 }
-const RINGS = [];
-for (let i = 1; i < 6; i++) {
-  const a = -Math.PI / 2 + i * Math.PI / 6, ring = [];
-  for (let j = 0; j <= 36; j++) { const b = j * Math.PI / 18; ring.push([Math.cos(a) * Math.cos(b) * .82, Math.cos(a) * Math.sin(b) * .95, Math.sin(a) * 1.08]); }
-  RINGS.push(ring);
+function tube(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = i / n * 2 * Math.PI, b = (i + 1) / n * 2 * Math.PI;
+    const p = (ang, z) => [Math.cos(ang), Math.sin(ang), z];
+    out.push([p(a, -0.5), p(b, -0.5), p(b, 0.5)], [p(a, -0.5), p(b, 0.5), p(a, 0.5)]);
+  }
+  return out;
 }
-for (let j = 0; j < 6; j++) {
-  const b = j * Math.PI / 6, ring = [];
-  for (let i = 0; i <= 36; i++) { const a = i * Math.PI / 18; ring.push([Math.cos(a) * Math.cos(b) * .82, Math.cos(a) * Math.sin(b) * .95, Math.sin(a) * 1.08]); }
-  RINGS.push(ring);
+
+const hgl = $('head').getContext('webgl2', {antialias: true, alpha: true});
+let hloc = {}, hmesh = {}, headQ = [1, 0, 0, 0];
+function headMesh(faces, map = p => p) {
+  const data = new Float32Array(faces.flatMap(f => f.flatMap(map)));
+  const vao = hgl.createVertexArray();
+  hgl.bindVertexArray(vao);
+  hgl.bindBuffer(hgl.ARRAY_BUFFER, hgl.createBuffer());
+  hgl.bufferData(hgl.ARRAY_BUFFER, data, hgl.STATIC_DRAW);
+  hgl.enableVertexAttribArray(0);
+  hgl.vertexAttribPointer(0, 3, hgl.FLOAT, false, 0, 0);
+  return {vao, count: data.length / 3};
 }
-const NOSE = [[0, 0.93, 0.12], [0, 1.25, -0.05], [0, 0.94, -0.18]];
+function headSetup() {
+  const shader = (type, src) => { const s = hgl.createShader(type); hgl.shaderSource(s, src); hgl.compileShader(s); return s; };
+  const prog = hgl.createProgram();
+  hgl.attachShader(prog, shader(hgl.VERTEX_SHADER, HEAD_VS));
+  hgl.attachShader(prog, shader(hgl.FRAGMENT_SHADER, HEAD_FS));
+  hgl.bindAttribLocation(prog, 0, 'aPos');
+  hgl.linkProgram(prog);
+  hgl.useProgram(prog);
+  for (const u of ['uRot', 'uCam', 'uScale', 'uOffset', 'uPos', 'uF', 'uColor']) hloc[u] = hgl.getUniformLocation(prog, u);
+  hmesh = {skull: headMesh(sphere(5), skull), ball: headMesh(sphere(2)), tube: headMesh(tube(24))};
+  hgl.enable(hgl.DEPTH_TEST);
+  const az = 0, el = 7 * Math.PI / 180;
+  const ca = Math.cos(az), sa = Math.sin(az), ce = Math.cos(el), se = Math.sin(el);
+  hgl.uniformMatrix3fv(hloc.uCam, false, [ca, -sa * ce, -sa * se, sa, ca * ce, ca * se, 0, -se, ce]);
+}
+const rgb = name => { const h = css(name); return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255); };
+const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+function part(mesh, color, rot, scale, offset = [0, 0, 0], pos = [0, 0, 0]) {
+  hgl.uniform3fv(hloc.uColor, color);
+  hgl.uniformMatrix3fv(hloc.uRot, false, rot);
+  hgl.uniform3fv(hloc.uScale, scale);
+  hgl.uniform3fv(hloc.uOffset, offset);
+  hgl.uniform3fv(hloc.uPos, pos);
+  hgl.bindVertexArray(mesh.vao);
+  hgl.drawArrays(hgl.TRIANGLES, 0, mesh.count);
+}
 function drawHead() {
-  const [g, w, h] = fit($('head'));
-  const cx = w / 2, cy = h / 2 - 14, scale = Math.min(w, h) * 0.25;
-  const q = latest ? latest.q : [1, 0, 0, 0];
-  const ink = css('--ink'), muted = css('--muted'), grid = css('--grid');
-  g.strokeStyle = grid; g.lineWidth = 1; g.beginPath();
-  for (let j = 0; j <= 48; j++) { const b = j * Math.PI / 24, p = camera([Math.cos(b) * 1.3, Math.sin(b) * 1.3, -1.05], cx, cy, scale); j ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }
-  g.stroke();
-  const a0 = camera([0, 1.3, -1.05], cx, cy, scale), a1 = camera([0, 1.65, -1.05], cx, cy, scale);
-  g.strokeStyle = muted; g.lineWidth = 2; g.beginPath(); g.moveTo(a0[0], a0[1]); g.lineTo(a1[0], a1[1]); g.stroke();
-  g.fillStyle = muted; g.textAlign = 'left'; g.fillText('straight ahead', a1[0] + 34, a1[1] + 4);
-  g.lineWidth = 1; g.strokeStyle = ink;
-  for (const ring of RINGS) {
-    for (let i = 0; i < ring.length - 1; i++) {
-      const p = camera(rot(q, ring[i]), cx, cy, scale), p2 = camera(rot(q, ring[i + 1]), cx, cy, scale);
-      g.globalAlpha = Math.max(0.1, 0.55 - 0.35 * (p[2] + p2[2]) / 2);
-      g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(p2[0], p2[1]); g.stroke();
-    }
+  if (!hgl) return;
+  const c = $('head'), r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  const w = Math.round(r.width * d), h = Math.round(r.height * d);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const target = latest ? latest.q : [1, 0, 0, 0];
+  const sign = headQ[0] * target[0] + headQ[1] * target[1] + headQ[2] * target[2] + headQ[3] * target[3] < 0 ? -1 : 1;
+  headQ = headQ.map((v, i) => v + (sign * target[i] - v) * 0.35);
+  const len = Math.hypot(...headQ);
+  headQ = headQ.map(v => v / len);
+  const [qw, x, y, z] = headQ;
+  const turn = [1 - 2 * (y * y + z * z), 2 * (x * y + z * qw), 2 * (x * z - y * qw),
+                2 * (x * y - z * qw), 1 - 2 * (x * x + z * z), 2 * (y * z + x * qw),
+                2 * (x * z + y * qw), 2 * (y * z - x * qw), 1 - 2 * (x * x + y * y)];
+  hgl.viewport(0, 0, w, h);
+  hgl.clearColor(0, 0, 0, 0);
+  hgl.clear(hgl.COLOR_BUFFER_BIT | hgl.DEPTH_BUFFER_BIT);
+  hgl.uniform2f(hloc.uF, 4.5 * h / w, 4.5);
+  const skin = rgb('--head'), body = rgb('--bust'), dark = rgb('--bud');
+  part(hmesh.ball, body, IDENTITY, [2.2, 0.78, 0.6], [0, 0, 0], [0, -0.18, -1.95]);
+  part(hmesh.tube, body, IDENTITY, [0.4, 0.42, 1.2], [0, 0, 0], [0, -0.14, -1.2]);
+  part(hmesh.skull, skin, turn, [1, 1, 1]);
+  for (const side of [-1, 1]) {
+    part(hmesh.ball, skin, turn, [0.07, 0.17, 0.25], [side * 0.76, -0.06, -0.06]);
+    part(hmesh.ball, dark, turn, [0.1, 0.1, 0.1], [side * 0.83, 0.02, -0.13]);
+    part(hmesh.ball, dark, turn, [0.075, 0.05, 0.075], [side * 0.29, 0.75, 0.13]);
   }
-  g.globalAlpha = 1;
-  const n = NOSE.map(v => camera(rot(q, v), cx, cy, scale));
-  g.strokeStyle = ink; g.lineWidth = 2; g.lineJoin = 'round';
-  g.beginPath(); g.moveTo(n[0][0], n[0][1]); g.lineTo(n[1][0], n[1][1]); g.lineTo(n[2][0], n[2][1]); g.stroke();
-  const f0 = camera(rot(q, [0, 1.25, -0.05]), cx, cy, scale), f1 = camera(rot(q, [0, 2.3, -0.05]), cx, cy, scale);
-  g.setLineDash([4, 4]); g.strokeStyle = css('--yaw'); g.beginPath(); g.moveTo(f0[0], f0[1]); g.lineTo(f1[0], f1[1]); g.stroke(); g.setLineDash([]);
-  for (const [x, label] of [[-0.86, 'L'], [0.86, 'R']]) {
-    const p = camera(rot(q, [x, 0, -0.08]), cx, cy, scale);
-    g.fillStyle = css('--surface'); g.beginPath(); g.arc(p[0], p[1], 9, 0, 7); g.fill();
-    g.fillStyle = ink; g.beginPath(); g.arc(p[0], p[1], 7, 0, 7); g.fill();
-    g.fillStyle = css('--surface'); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, p[0], p[1] + 0.5);
-  }
-  g.textBaseline = 'alphabetic';
 }
+if (hgl) headSetup();
 
 function drawGaze() {
   const [g, w, h] = fit($('gaze'));
