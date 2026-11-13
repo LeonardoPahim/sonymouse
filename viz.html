@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Head tracking</title>
+<style>
+  :root {
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --yaw: #2a78d6; --pitch: #eb6834; --roll: #1baf7a;
+    --good: #0ca30c; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --yaw: #3987e5; --pitch: #d95926; --roll: #199e70;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 32px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  #status { color: var(--ink2); display: flex; align-items: center; gap: 6px; margin-right: auto; }
+  #status i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  #status.live i { background: var(--good); }
+  #status.lost i { background: var(--critical); }
+  button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--axis);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button:disabled { color: var(--muted); cursor: default; }
+  button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+  #banner { margin-bottom: 12px; text-align: center; padding: 18px 14px; border-color: var(--ink2); }
+  #banner-step { color: var(--ink2); font-size: 12px; }
+  #banner-text { font-size: 24px; font-weight: 600; margin: 4px 0 12px; }
+  #banner.note #banner-text { font-size: 16px; font-weight: 400; margin-bottom: 0; }
+  #banner-bar { height: 4px; border-radius: 2px; background: var(--grid); overflow: hidden; max-width: 420px; margin: 0 auto; }
+  #banner-bar i { display: block; height: 100%; background: var(--ink); width: 0; }
+  #banner.note #banner-bar, #banner.note #banner-step { display: none; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--grid); border-radius: 12px; padding: 12px 14px; }
+  .tile .k { color: var(--ink2); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .tile .k i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .tile .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .v small { font-size: 13px; font-weight: 400; color: var(--ink2); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  @media (max-width: 720px) { .row { grid-template-columns: 1fr; } }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--ink2); font-size: 12px; margin: 0 0 8px; }
+  canvas { display: block; width: 100%; }
+  #head, #gaze { height: 300px; }
+  #strip { height: 240px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; }
+  .chartwrap { position: relative; }
+  #tip { position: absolute; pointer-events: none; display: none; background: var(--surface); border: 1px solid var(--axis);
+         border-radius: 8px; padding: 6px 9px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+         box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  #tip div { display: flex; align-items: center; gap: 6px; }
+  #tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  #tip .t { color: var(--ink2); margin-bottom: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Head tracking</h1>
+    <span id="status"><i></i><span id="statustext">Connecting…</span></span>
+    <button id="recenter" title="Use the current head position as straight ahead">Recenter</button>
+    <button id="calibrate" title="Teach the tracker which way is right and up (12 seconds)">Calibrate</button>
+    <button id="mouse" aria-pressed="false">Mouse control</button>
+    <button onclick="location.href='/parallax'" title="A 3D box that shifts as you turn your head">Shadow box</button>
+    <button id="quit" title="Stop the tracker and release the earbuds">Stop</button>
+  </header>
+
+  <div id="banner" class="card" hidden>
+    <div id="banner-step"></div>
+    <div id="banner-text"></div>
+    <div id="banner-bar"><i></i></div>
+  </div>
+
+  <section class="tiles">
+    <div class="card tile"><div class="k"><i style="background:var(--yaw)"></i>Yaw (left / right)</div><div class="v"><span id="v-yaw">–</span><small>°</small></div></div>
+    <div class="card tile"><div class="k"><i style="background:var(--pitch)"></i>Pitch (down / up)</div><div class="v"><span id="v-pitch">–</span><small>°</small></div></div>
+    <div class="card tile"><div class="k"><i style="background:var(--roll)"></i>Roll (tilt)</div><div class="v"><span id="v-roll">–</span><small>°</small></div></div>
+    <div class="card tile"><div class="k">Head speed</div><div class="v"><span id="v-speed">–</span><small> °/s</small></div></div>
+    <div class="card tile"><div class="k">Sample rate</div><div class="v"><span id="v-hz">–</span><small> Hz</small></div></div>
+    <div class="card tile"><div class="k">Cursor push</div><div class="v"><span id="v-px">–</span><small> px/s</small></div></div>
+  </section>
+
+  <section class="row">
+    <div class="card">
+      <h2>Head orientation</h2>
+      <p class="sub">Seen from behind your right shoulder. The line from the nose is where you are facing.</p>
+      <canvas id="head"></canvas>
+    </div>
+    <div class="card">
+      <h2>Where you are looking</h2>
+      <p class="sub">Yaw against pitch, relative to the last recenter. The tail is the last 2 seconds.</p>
+      <canvas id="gaze"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Angles over the last 30 seconds</h2>
+    <p class="sub">Degrees from the recentered position. Hover to read values.</p>
+    <div class="legend">
+      <span><i style="background:var(--yaw)"></i>Yaw</span>
+      <span><i style="background:var(--pitch)"></i>Pitch</span>
+      <span><i style="background:var(--roll)"></i>Roll</span>
+    </div>
+    <div class="chartwrap"><canvas id="strip"></canvas><div id="tip"></div></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const WINDOW = 30, TAIL = 2;
+let samples = [];
+let latest = null, lastAt = 0, hoverX = null;
+
+const es = new EventSource('/events');
+es.onmessage = e => {
+  const s = JSON.parse(e.data);
+  latest = s; lastAt = performance.now();
+  samples.push(s);
+  const cut = s.t - WINDOW - 1;
+  while (samples.length && samples[0].t < cut) samples.shift();
+};
+const post = path => fetch(path, {method: 'POST', headers: {'X-Sonymouse': '1'}});
+$('recenter').onclick = () => { post('/recenter'); samples = []; };
+$('calibrate').onclick = () => post('/calibrate');
+$('mouse').onclick = () => post('/mouse?on=' + (latest && latest.mouse ? 0 : 1));
+$('quit').onclick = () => { post('/quit'); es.close(); latest = null; $('quit').disabled = true; };
+
+function fit(c) {
+  const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * d) || c.height !== Math.round(r.height * d)) {
+    c.width = Math.round(r.width * d); c.height = Math.round(r.height * d);
+  }
+  const g = c.getContext('2d');
+  g.setTransform(d, 0, 0, d, 0, 0);
+  g.clearRect(0, 0, r.width, r.height);
+  g.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+  return [g, r.width, r.height];
+}
+const sgn = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1);
+
+function rot(q, v) {
+  const [w, x, y, z] = q, [a, b, c] = v;
+  const tx = 2 * (y * c - z * b), ty = 2 * (z * a - x * c), tz = 2 * (x * b - y * a);
+  return [a + w * tx + (y * tz - z * ty), b + w * ty + (z * tx - x * tz), c + w * tz + (x * ty - y * tx)];
+}
+const AZ = -28 * Math.PI / 180, EL = 22 * Math.PI / 180;
+function camera(v, cx, cy, scale) {
+  const x = v[0] * Math.cos(AZ) - v[1] * Math.sin(AZ), y = v[0] * Math.sin(AZ) + v[1] * Math.cos(AZ), z = v[2];
+  const depth = y * Math.cos(EL) - z * Math.sin(EL), up = z * Math.cos(EL) + y * Math.sin(EL);
+  const p = 4 / (4 + depth);
+  return [cx + x * scale * p, cy - up * scale * p, depth];
+}
+const RINGS = [];
+for (let i = 1; i < 6; i++) {
+  const a = -Math.PI / 2 + i * Math.PI / 6, ring = [];
+  for (let j = 0; j <= 36; j++) { const b = j * Math.PI / 18; ring.push([Math.cos(a) * Math.cos(b) * .82, Math.cos(a) * Math.sin(b) * .95, Math.sin(a) * 1.08]); }
+  RINGS.push(ring);
+}
+for (let j = 0; j < 6; j++) {
+  const b = j * Math.PI / 6, ring = [];
+  for (let i = 0; i <= 36; i++) { const a = i * Math.PI / 18; ring.push([Math.cos(a) * Math.cos(b) * .82, Math.cos(a) * Math.sin(b) * .95, Math.sin(a) * 1.08]); }
+  RINGS.push(ring);
+}
+const NOSE = [[0, 0.93, 0.12], [0, 1.25, -0.05], [0, 0.94, -0.18]];
+function drawHead() {
+  const [g, w, h] = fit($('head'));
+  const cx = w / 2, cy = h / 2 - 14, scale = Math.min(w, h) * 0.25;
+  const q = latest ? latest.q : [1, 0, 0, 0];
+  const ink = css('--ink'), muted = css('--muted'), grid = css('--grid');
+  g.strokeStyle = grid; g.lineWidth = 1; g.beginPath();
+  for (let j = 0; j <= 48; j++) { const b = j * Math.PI / 24, p = camera([Math.cos(b) * 1.7, Math.sin(b) * 1.7, -1.15], cx, cy, scale); j ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }
+  g.stroke();
+  const a0 = camera([0, 1.7, -1.15], cx, cy, scale), a1 = camera([0, 2.05, -1.15], cx, cy, scale);
+  g.strokeStyle = muted; g.lineWidth = 2; g.beginPath(); g.moveTo(a0[0], a0[1]); g.lineTo(a1[0], a1[1]); g.stroke();
+  g.fillStyle = muted; g.textAlign = 'left'; g.fillText('straight ahead', a1[0] + 8, a1[1] + 4);
+  g.lineWidth = 1; g.strokeStyle = ink;
+  for (const ring of RINGS) {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const p = camera(rot(q, ring[i]), cx, cy, scale), p2 = camera(rot(q, ring[i + 1]), cx, cy, scale);
+      g.globalAlpha = Math.max(0.1, 0.55 - 0.35 * (p[2] + p2[2]) / 2);
+      g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(p2[0], p2[1]); g.stroke();
+    }
+  }
+  g.globalAlpha = 1;
+  const n = NOSE.map(v => camera(rot(q, v), cx, cy, scale));
+  g.strokeStyle = ink; g.lineWidth = 2; g.lineJoin = 'round';
+  g.beginPath(); g.moveTo(n[0][0], n[0][1]); g.lineTo(n[1][0], n[1][1]); g.lineTo(n[2][0], n[2][1]); g.stroke();
+  const f0 = camera(rot(q, [0, 1.25, -0.05]), cx, cy, scale), f1 = camera(rot(q, [0, 2.3, -0.05]), cx, cy, scale);
+  g.setLineDash([4, 4]); g.strokeStyle = css('--yaw'); g.beginPath(); g.moveTo(f0[0], f0[1]); g.lineTo(f1[0], f1[1]); g.stroke(); g.setLineDash([]);
+  for (const [x, label] of [[-0.86, 'L'], [0.86, 'R']]) {
+    const p = camera(rot(q, [x, 0, -0.08]), cx, cy, scale);
+    g.fillStyle = css('--surface'); g.beginPath(); g.arc(p[0], p[1], 9, 0, 7); g.fill();
+    g.fillStyle = ink; g.beginPath(); g.arc(p[0], p[1], 7, 0, 7); g.fill();
+    g.fillStyle = css('--surface'); g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label, p[0], p[1] + 0.5);
+  }
+  g.textBaseline = 'alphabetic';
+}
+
+function drawGaze() {
+  const [g, w, h] = fit($('gaze'));
+  const L = 34, R = 10, T = 8, B = 22, pw = w - L - R, ph = h - T - B;
+  const YR = 60, PR = 40;
+  const X = yaw => L + (yaw + YR) / (2 * YR) * pw, Y = pitch => T + (PR - pitch) / (2 * PR) * ph;
+  g.lineWidth = 1; g.fillStyle = css('--muted');
+  for (let v = -YR; v <= YR; v += 20) {
+    g.strokeStyle = v === 0 ? css('--axis') : css('--grid');
+    g.beginPath(); g.moveTo(X(v), T); g.lineTo(X(v), T + ph); g.stroke();
+    g.textAlign = 'center'; g.fillText(v + '°', X(v), h - 6);
+  }
+  for (let v = -PR; v <= PR; v += 20) {
+    g.strokeStyle = v === 0 ? css('--axis') : css('--grid');
+    g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(L + pw, Y(v)); g.stroke();
+    g.textAlign = 'right'; g.fillText(v + '°', L - 6, Y(v) + 4);
+  }
+  g.textAlign = 'left'; g.fillText('left', L + 4, T + ph - 5);
+  g.textAlign = 'right'; g.fillText('right', L + pw - 4, T + ph - 5);
+  g.textAlign = 'center'; g.fillText('up', X(0) + 14, T + 12); g.fillText('down', X(0) + 20, T + ph - 5);
+  if (!latest) return;
+  const clampX = v => Math.max(-YR, Math.min(YR, v)), clampY = v => Math.max(-PR, Math.min(PR, v));
+  const tail = samples.filter(s => s.t >= latest.t - TAIL);
+  g.strokeStyle = css('--yaw'); g.lineWidth = 2; g.lineCap = 'round';
+  for (let i = 1; i < tail.length; i++) {
+    g.globalAlpha = 0.08 + 0.6 * i / tail.length;
+    g.beginPath(); g.moveTo(X(clampX(tail[i - 1].yaw)), Y(clampY(tail[i - 1].pitch)));
+    g.lineTo(X(clampX(tail[i].yaw)), Y(clampY(tail[i].pitch))); g.stroke();
+  }
+  g.globalAlpha = 1;
+  const px = X(clampX(latest.yaw)), py = Y(clampY(latest.pitch));
+  g.fillStyle = css('--surface'); g.beginPath(); g.arc(px, py, 8, 0, 7); g.fill();
+  g.fillStyle = css('--yaw'); g.beginPath(); g.arc(px, py, 6, 0, 7); g.fill();
+}
+
+const SERIES = [['yaw', '--yaw', 'Yaw'], ['pitch', '--pitch', 'Pitch'], ['roll', '--roll', 'Roll']];
+function drawStrip() {
+  const c = $('strip'), [g, w, h] = fit(c);
+  const L = 40, R = 46, T = 8, B = 22, pw = w - L - R, ph = h - T - B;
+  const now = latest ? latest.t : 0;
+  let peak = 30;
+  for (const s of samples) peak = Math.max(peak, Math.abs(s.yaw), Math.abs(s.pitch), Math.abs(s.roll));
+  const range = Math.ceil(peak / 30) * 30;
+  const X = t => L + (t - (now - WINDOW)) / WINDOW * pw, Y = v => T + (range - v) / (2 * range) * ph;
+  g.lineWidth = 1; g.fillStyle = css('--muted');
+  for (const v of [-range, -range / 2, 0, range / 2, range]) {
+    g.strokeStyle = v === 0 ? css('--axis') : css('--grid');
+    g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(L + pw, Y(v)); g.stroke();
+    g.textAlign = 'right'; g.fillText((v > 0 ? '+' : '') + v + '°', L - 6, Y(v) + 4);
+  }
+  g.textAlign = 'center';
+  for (let s = 0; s <= WINDOW; s += 5) g.fillText(s === 0 ? 'now' : '−' + s + ' s', L + pw - s / WINDOW * pw, h - 6);
+  if (!samples.length) return;
+  const vis = samples.filter(s => s.t >= now - WINDOW);
+  g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();
+  g.lineWidth = 2; g.lineJoin = 'round';
+  for (const [key, color] of SERIES) {
+    g.strokeStyle = css(color); g.beginPath();
+    let prev = null;
+    for (const s of vis) {
+      if (prev && s.t - prev.t < 0.5) g.lineTo(X(s.t), Y(s[key])); else g.moveTo(X(s.t), Y(s[key]));
+      prev = s;
+    }
+    g.stroke();
+  }
+  g.restore();
+  const last = vis[vis.length - 1];
+  const ends = SERIES.map(([key, color, name]) => ({name, y: Y(last[key])})).sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
+  g.fillStyle = css('--ink2'); g.textAlign = 'left';
+  for (const e of ends) g.fillText(e.name, L + pw + 6, Math.min(Math.max(e.y + 4, T + 10), T + ph));
+  const tip = $('tip');
+  if (hoverX === null || hoverX < L || hoverX > L + pw) { tip.style.display = 'none'; return; }
+  const t = now - WINDOW + (hoverX - L) / pw * WINDOW;
+  let near = vis[0];
+  for (const s of vis) if (Math.abs(s.t - t) < Math.abs(near.t - t)) near = s;
+  const x = X(near.t);
+  g.strokeStyle = css('--muted'); g.lineWidth = 1; g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
+  for (const [key, color] of SERIES) {
+    g.fillStyle = css('--surface'); g.beginPath(); g.arc(x, Y(near[key]), 6, 0, 7); g.fill();
+    g.fillStyle = css(color); g.beginPath(); g.arc(x, Y(near[key]), 4, 0, 7); g.fill();
+  }
+  tip.innerHTML = `<div class="t">${(now - near.t).toFixed(1)} s ago</div>` +
+    SERIES.map(([key, color, name]) => `<div><i style="background:var(${color})"></i>${name} ${sgn(near[key])}°</div>`).join('');
+  tip.style.display = 'block';
+  tip.style.left = (x + 12 + tip.offsetWidth > w ? x - 12 - tip.offsetWidth : x + 12) + 'px';
+  tip.style.top = T + 4 + 'px';
+}
+$('strip').addEventListener('mousemove', e => { hoverX = e.clientX - e.target.getBoundingClientRect().left; });
+$('strip').addEventListener('mouseleave', () => { hoverX = null; });
+
+function frame() {
+  const stale = !latest || performance.now() - lastAt > 800;
+  const st = $('status');
+  if (!latest) { st.className = $('quit').disabled ? 'lost' : ''; $('statustext').textContent = $('quit').disabled ? 'Stopped' : 'Waiting for the earbuds…'; }
+  else if (stale) { st.className = 'lost'; $('statustext').textContent = latest.name + ': no data (earbuds out of your ears, or tracker stopped)'; }
+  else { st.className = 'live'; $('statustext').textContent = latest.name + ': live'; }
+  if (latest) {
+    $('v-yaw').textContent = sgn(latest.yaw); $('v-pitch').textContent = sgn(latest.pitch); $('v-roll').textContent = sgn(latest.roll);
+    $('v-speed').textContent = stale ? '–' : latest.speed.toFixed(0);
+    $('v-hz').textContent = stale ? '–' : latest.hz.toFixed(0);
+    $('v-px').textContent = stale || !latest.mouse ? 'off' : Math.hypot(latest.dx, latest.dy).toFixed(0);
+    const b = $('banner'), c = stale ? null : latest.calib;
+    b.hidden = !(c || (!stale && latest.note));
+    b.className = 'card' + (c ? '' : ' note');
+    if (c) {
+      $('banner-step').textContent = `Calibration, step ${c.step} of ${c.of}`;
+      $('banner-text').textContent = c.text;
+      $('banner-bar').firstElementChild.style.width = Math.max(0, Math.min(100, (1 - c.left / 3) * 100)) + '%';
+    } else if (latest.note) $('banner-text').textContent = latest.note;
+    $('calibrate').disabled = !!c;
+    const m = $('mouse');
+    m.disabled = !latest.can_mouse;
+    m.setAttribute('aria-pressed', latest.mouse ? 'true' : 'false');
+    m.textContent = latest.can_mouse ? (latest.mouse ? 'Mouse control: on' : 'Mouse control: off') : 'Mouse control unavailable';
+  }
+  drawHead(); drawGaze(); drawStrip();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

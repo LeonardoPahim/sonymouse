@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shadow box</title>
+<style>
+  :root { --deep: #0d1640; --cream: #f3ead7; --ochre: #e8ab3a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--deep); overflow: hidden; }
+  body { font: 15px/1.45 Futura, "Avenir Next", "Century Gothic", sans-serif; color: var(--cream); }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #hud { position: fixed; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-items: flex-end;
+         gap: 10px 28px; padding: 40px 24px 20px; transition: opacity .6s;
+         background: linear-gradient(to top, rgba(13, 22, 64, .85), rgba(13, 22, 64, 0)); }
+  #hud.idle { opacity: 0; pointer-events: none; }
+  #hud:focus-within { opacity: 1; pointer-events: auto; }
+  #about { margin-right: auto; max-width: 46ch; }
+  h1 { font-size: 22px; font-weight: 500; letter-spacing: .01em; margin: 0 0 2px; }
+  #hint { margin: 0; opacity: .8; }
+  #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
+  button, a { font: inherit; color: var(--cream); background: none; border: 0; border-bottom: 1px solid rgba(243, 234, 215, .45);
+              padding: 2px 0; cursor: pointer; text-decoration: none; }
+  button:hover, a:hover { border-bottom-color: var(--ochre); color: var(--ochre); }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--ochre); outline-offset: 4px; }
+  button:disabled { opacity: .45; cursor: default; }
+  label { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { width: 110px; accent-color: var(--ochre); }
+  #fail { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; }
+  #fail[hidden] { display: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="fail" hidden>This browser cannot draw the box (WebGL 2 is unavailable). Try a current Chrome or Safari.</div>
+<div id="hud">
+  <div id="about">
+    <h1>Shadow box</h1>
+    <p id="hint">Connecting to the earbuds…</p>
+  </div>
+  <div id="controls">
+    <label>Depth <input id="strength" type="range" min="0.2" max="2.5" step="0.05" value="1"></label>
+    <button id="flip" title="Swap which way the view shifts when you turn">Flip direction</button>
+    <button id="recenter" title="Use the current head position as straight ahead">Recenter</button>
+    <button id="mouse">Cursor control</button>
+    <button id="full">Full screen</button>
+    <a href="/">Tracking view</a>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('gl'), gl = canvas.getContext('webgl2', {antialias: true});
+if (!gl) $('fail').hidden = false;
+
+const DEPTH = 2.4, EYE_Z = 2.6;
+const VS = `#version 300 es
+in vec3 aPos;
+uniform mat4 uProj; uniform vec3 uEye, uPos; uniform mat3 uRot; uniform float uScale;
+out vec3 vW; out vec3 vL;
+void main() {
+  vL = aPos;
+  vW = uRot * (aPos * uScale) + uPos;
+  gl_Position = uProj * vec4(vW - uEye, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+in vec3 vW; in vec3 vL;
+uniform int uMode, uAxis; uniform vec3 uColor; uniform float uShade;
+out vec4 o;
+const vec3 FOG = vec3(0.051, 0.086, 0.251), CHALK = vec3(0.87, 0.90, 1.0);
+void main() {
+  float fog = smoothstep(0.0, ${DEPTH.toFixed(1)}, -vW.z);
+  if (uMode == 0) {
+    vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
+    float d = max(dot(n, normalize(vec3(-0.45, 0.8, 0.55))), 0.0);
+    vec3 c = uColor * (0.34 + 0.8 * d) + vec3(0.10, 0.12, 0.25) * (1.0 - d);
+    o = vec4(mix(c, FOG, fog * 0.6), 1.0);
+  } else if (uMode == 1) {
+    vec2 p = (uAxis == 0 ? vW.yz : uAxis == 1 ? vW.xz : vW.xy) / 0.25;
+    vec2 g = abs(fract(p - 0.5) - 0.5) / fwidth(p);
+    float line = 1.0 - min(min(g.x, g.y) / 1.3, 1.0);
+    vec3 c = mix(uColor * uShade, CHALK, line * 0.5);
+    o = vec4(mix(c, FOG, fog * 0.82), 1.0);
+  } else if (uMode == 2) {
+    o = vec4(mix(uColor, FOG, fog * 0.6), 1.0);
+  } else {
+    o = vec4(0.02, 0.03, 0.12, 0.5 * smoothstep(1.0, 0.15, length(vL.xz)));
+  }
+}`;
+
+const tri = (out, a, b, c) => out.push(...a, ...b, ...c);
+const norm = v => { const n = Math.hypot(...v); return v.map(x => x / n); };
+function cube() {
+  const o = [], q = (a, b, c, d) => { tri(o, a, b, c); tri(o, a, c, d); };
+  const v = (x, y, z) => [x, y, z];
+  q(v(-1,-1,1), v(1,-1,1), v(1,1,1), v(-1,1,1)); q(v(1,-1,-1), v(-1,-1,-1), v(-1,1,-1), v(1,1,-1));
+  q(v(1,-1,1), v(1,-1,-1), v(1,1,-1), v(1,1,1)); q(v(-1,-1,-1), v(-1,-1,1), v(-1,1,1), v(-1,1,-1));
+  q(v(-1,1,1), v(1,1,1), v(1,1,-1), v(-1,1,-1)); q(v(-1,-1,-1), v(1,-1,-1), v(1,-1,1), v(-1,-1,1));
+  return o;
+}
+function octa() {
+  const o = [], X = [1,0,0], x = [-1,0,0], Y = [0,1.25,0], y = [0,-1.25,0], Z = [0,0,1], z = [0,0,-1];
+  for (const t of [Y, y]) { tri(o, t, X, Z); tri(o, t, Z, x); tri(o, t, x, z); tri(o, t, z, X); }
+  return o;
+}
+function icosaFaces() {
+  const t = (1 + Math.sqrt(5)) / 2;
+  const v = [[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(norm);
+  const f = [[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+             [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
+  return f.map(([a, b, c]) => [v[a], v[b], v[c]]);
+}
+function icosa(levels) {
+  let faces = icosaFaces();
+  for (let i = 0; i < levels; i++) {
+    faces = faces.flatMap(([a, b, c]) => {
+      const m = (p, q) => norm([p[0] + q[0], p[1] + q[1], p[2] + q[2]]);
+      const ab = m(a, b), bc = m(b, c), ca = m(c, a);
+      return [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]];
+    });
+  }
+  const o = []; faces.forEach(f => tri(o, ...f)); return o;
+}
+function torus(R, r, n, m) {
+  const o = [], p = (i, j) => {
+    const a = i / n * 2 * Math.PI, b = j / m * 2 * Math.PI;
+    return [(R + r * Math.cos(b)) * Math.cos(a), r * Math.sin(b), (R + r * Math.cos(b)) * Math.sin(a)];
+  };
+  for (let i = 0; i < n; i++) for (let j = 0; j < m; j++) {
+    tri(o, p(i, j), p(i + 1, j), p(i + 1, j + 1)); tri(o, p(i, j), p(i + 1, j + 1), p(i, j + 1));
+  }
+  return o;
+}
+function disc() {
+  const o = [];
+  for (let i = 0; i < 24; i++) {
+    const a = i / 24 * 2 * Math.PI, b = (i + 1) / 24 * 2 * Math.PI;
+    tri(o, [0, 0, 0], [Math.cos(a), 0, Math.sin(a)], [Math.cos(b), 0, Math.sin(b)]);
+  }
+  return o;
+}
+
+let prog, loc = {}, meshes = {}, wallBuf, threadBuf;
+function mesh(data) {
+  const vao = gl.createVertexArray(), buf = gl.createBuffer();
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  return {vao, buf, count: data.length / 3};
+}
+function setup() {
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.bindAttribLocation(prog, 0, 'aPos'); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  for (const u of ['uProj', 'uEye', 'uPos', 'uRot', 'uScale', 'uMode', 'uAxis', 'uColor', 'uShade']) loc[u] = gl.getUniformLocation(prog, u);
+  meshes = {cube: mesh(cube()), octa: mesh(octa()), gem: mesh(icosa(0)), ball: mesh(icosa(2)),
+            ring: mesh(torus(1, 0.38, 28, 10)), disc: mesh(disc())};
+  wallBuf = mesh(new Array(18).fill(0)); threadBuf = mesh(new Array(6).fill(0));
+  gl.enable(gl.DEPTH_TEST);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+}
+
+const OCHRE = [0.91, 0.67, 0.23], CORAL = [0.94, 0.44, 0.35], CREAM = [0.95, 0.92, 0.84], MINT = [0.5, 0.82, 0.7];
+const THINGS = [
+  {m: 'ring', c: OCHRE, x: 0.0,  y: 0.02,  z: -1.0, s: 0.27, spin: 0.5,  tilt: 0.5},
+  {m: 'gem',  c: CORAL, x: -0.6, y: 0.13,  z: -0.4, s: 0.13, spin: -0.4, tilt: 0.3},
+  {m: 'cube', c: CREAM, x: 0.66, y: -0.12, z: -1.6, s: 0.12, spin: 0.3,  tilt: 0.6},
+  {m: 'ball', c: MINT,  x: -0.8, y: -0.2,  z: -2.0, s: 0.15, spin: 0.2,  tilt: 0.0},
+  {m: 'cube', c: OCHRE, x: 0.82, y: 0.24,  z: -0.7, s: 0.07, spin: -0.6, tilt: 0.8},
+  {m: 'octa', c: MINT,  x: 0.36, y: 0.1,   z: 0.45, s: 0.06, spin: 0.7,  tilt: 0.0},
+  {m: 'ball', c: CREAM, x: -0.3, y: -0.17, z: 0.7,  s: 0.045, spin: 0.3, tilt: 0.0},
+  {m: 'gem',  c: CORAL, x: 0.2,  y: -0.28, z: -2.1, s: 0.1,  spin: 0.5,  tilt: 0.4},
+];
+
+let head = null, headAt = 0, pointer = [0, 0], eye = [0, 0], dir = 1, mouseOn = false, canMouse = false;
+const forced = (location.hash.match(/eye=([-\d.]+),([-\d.]+)/) || []).slice(1).map(Number);
+const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+try { dir = localStorage.getItem('shadowbox-dir') === '-1' ? -1 : 1; } catch (e) {}
+
+const es = new EventSource('/events');
+es.onmessage = e => { head = JSON.parse(e.data); headAt = performance.now(); mouseOn = head.mouse; canMouse = head.can_mouse; };
+const post = path => fetch(path, {method: 'POST', headers: {'X-Sonymouse': '1'}});
+$('recenter').onclick = () => post('/recenter');
+$('mouse').onclick = () => post('/mouse?on=' + (mouseOn ? 0 : 1));
+$('flip').onclick = () => { dir = -dir; try { localStorage.setItem('shadowbox-dir', dir); } catch (e) {} };
+$('full').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+
+let idleTimer;
+function wake() { $('hud').classList.remove('idle'); clearTimeout(idleTimer); idleTimer = setTimeout(() => $('hud').classList.add('idle'), 4000); }
+addEventListener('pointermove', e => { pointer = [e.clientX / innerWidth * 2 - 1, 1 - e.clientY / innerHeight * 2]; wake(); });
+addEventListener('keydown', wake);
+wake();
+
+function draw(m, mode, o = {}) {
+  gl.uniform1i(loc.uMode, mode);
+  gl.uniform1i(loc.uAxis, o.axis || 0);
+  gl.uniform1f(loc.uShade, o.shade || 1);
+  gl.uniform3fv(loc.uColor, o.color || [1, 1, 1]);
+  gl.uniform3fv(loc.uPos, o.pos || [0, 0, 0]);
+  gl.uniform1f(loc.uScale, o.scale || 1);
+  gl.uniformMatrix3fv(loc.uRot, false, o.rot || [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  gl.bindVertexArray(m.vao);
+  gl.drawArrays(o.lines ? gl.LINES : gl.TRIANGLES, 0, m.count);
+}
+function quad(m, a, b, c, d) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, m.buf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array([...a, ...b, ...c, ...a, ...c, ...d]));
+}
+function rotYX(a, b) {
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b);
+  return [ca, sa * sb, -sa * cb, 0, cb, sb, sa, -ca * sb, ca * cb];
+}
+
+let lastT = 0;
+function frame(ms) {
+  const t = ms / 1000, dt = Math.min(0.1, t - lastT || 0.016); lastT = t;
+  const d = devicePixelRatio || 1, w = Math.round(innerWidth * d), h = Math.round(innerHeight * d);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const half = w / h / 2;
+
+  const live = head && performance.now() - headAt < 1000;
+  const k = +$('strength').value;
+  let tx, ty;
+  if (forced.length === 2) [tx, ty] = forced;
+  else if (live) { tx = dir * k * head.yaw / 25 * half; ty = dir * k * head.pitch / 20 * 0.5; }
+  else { tx = pointer[0] * half * k; ty = pointer[1] * 0.5 * k; }
+  const lim = v => Math.max(-2.2, Math.min(2.2, v));
+  const ease = 1 - Math.exp(-dt / 0.07);
+  eye[0] += (lim(tx) - eye[0]) * ease; eye[1] += (lim(ty) - eye[1]) * ease;
+  $('hint').textContent = live ? 'Turn your head to look around the box. The small solids hang in front of the screen.'
+    : head ? 'No data from the earbuds. Put them in, or move the pointer to look around.'
+    : 'Earbuds not connected to this page. Move the pointer to look around.';
+  $('mouse').disabled = !canMouse;
+  $('mouse').textContent = 'Cursor control: ' + (mouseOn ? 'on' : 'off');
+
+  const n = 0.2, f = 12, s = n / EYE_Z;
+  const l = (-half - eye[0]) * s, r = (half - eye[0]) * s, b = (-0.5 - eye[1]) * s, tp = (0.5 - eye[1]) * s;
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0.051, 0.086, 0.251, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.uniformMatrix4fv(loc.uProj, false, [2 * n / (r - l), 0, 0, 0, 0, 2 * n / (tp - b), 0, 0,
+    (r + l) / (r - l), (tp + b) / (tp - b), -(f + n) / (f - n), -1, 0, 0, -2 * f * n / (f - n), 0]);
+  gl.uniform3f(loc.uEye, eye[0], eye[1], EYE_Z);
+
+  const W = half, D = -DEPTH, wall = [0.16, 0.27, 0.74];
+  quad(wallBuf, [-W, -0.5, D], [W, -0.5, D], [W, 0.5, D], [-W, 0.5, D]); draw(wallBuf, 1, {axis: 2, color: wall, shade: 0.8});
+  quad(wallBuf, [-W, -0.5, 0], [W, -0.5, 0], [W, -0.5, D], [-W, -0.5, D]); draw(wallBuf, 1, {axis: 1, color: wall, shade: 0.72});
+  quad(wallBuf, [-W, 0.5, 0], [W, 0.5, 0], [W, 0.5, D], [-W, 0.5, D]); draw(wallBuf, 1, {axis: 1, color: wall, shade: 1.12});
+  quad(wallBuf, [-W, -0.5, 0], [-W, 0.5, 0], [-W, 0.5, D], [-W, -0.5, D]); draw(wallBuf, 1, {axis: 0, color: wall, shade: 1.0});
+  quad(wallBuf, [W, -0.5, 0], [W, 0.5, 0], [W, 0.5, D], [W, -0.5, D]); draw(wallBuf, 1, {axis: 0, color: wall, shade: 0.9});
+
+  const placed = THINGS.map((o, i) => {
+    const sway = still ? 0 : 0.012 * Math.sin(t * 0.7 + i * 1.9);
+    return {...o, pos: [o.x * W + sway, o.y, o.z], rot: rotYX(still ? i : t * o.spin + i, o.tilt)};
+  });
+  gl.enable(gl.BLEND); gl.depthMask(false);
+  for (const o of placed) if (o.z < 0) draw(meshes.disc, 3, {pos: [o.pos[0], -0.497, o.z], scale: o.s * 1.5});
+  gl.disable(gl.BLEND); gl.depthMask(true);
+  for (const o of placed) {
+    draw(meshes[o.m], 0, {pos: o.pos, rot: o.rot, scale: o.s, color: o.c});
+    gl.bindBuffer(gl.ARRAY_BUFFER, threadBuf.buf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array([o.x * W, 0.5, o.z, o.pos[0], o.y + o.s * 0.9, o.z]));
+    draw(threadBuf, 2, {color: CREAM, lines: true});
+  }
+  requestAnimationFrame(frame);
+}
+if (gl) {
+  try { setup(); requestAnimationFrame(frame); }
+  catch (e) { $('fail').hidden = false; $('fail').textContent = 'The box could not be drawn: ' + e.message; }
+}
+</script>
+</body>
+</html>
