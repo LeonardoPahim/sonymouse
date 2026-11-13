@@ -178,11 +178,11 @@ function drawHead() {
   const q = latest ? latest.q : [1, 0, 0, 0];
   const ink = css('--ink'), muted = css('--muted'), grid = css('--grid');
   g.strokeStyle = grid; g.lineWidth = 1; g.beginPath();
-  for (let j = 0; j <= 48; j++) { const b = j * Math.PI / 24, p = camera([Math.cos(b) * 1.7, Math.sin(b) * 1.7, -1.15], cx, cy, scale); j ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }
+  for (let j = 0; j <= 48; j++) { const b = j * Math.PI / 24, p = camera([Math.cos(b) * 1.3, Math.sin(b) * 1.3, -1.05], cx, cy, scale); j ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); }
   g.stroke();
-  const a0 = camera([0, 1.7, -1.15], cx, cy, scale), a1 = camera([0, 2.05, -1.15], cx, cy, scale);
+  const a0 = camera([0, 1.3, -1.05], cx, cy, scale), a1 = camera([0, 1.65, -1.05], cx, cy, scale);
   g.strokeStyle = muted; g.lineWidth = 2; g.beginPath(); g.moveTo(a0[0], a0[1]); g.lineTo(a1[0], a1[1]); g.stroke();
-  g.fillStyle = muted; g.textAlign = 'left'; g.fillText('straight ahead', a1[0] + 8, a1[1] + 4);
+  g.fillStyle = muted; g.textAlign = 'left'; g.fillText('straight ahead', a1[0] + 34, a1[1] + 4);
   g.lineWidth = 1; g.strokeStyle = ink;
   for (const ring of RINGS) {
     for (let i = 0; i < ring.length - 1; i++) {

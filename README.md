@@ -7,6 +7,14 @@ Tested with the WF-1000XM5.
 - Watch the tracking live in a browser page.
 - Look around a 3D box that shifts with your head (parallax window effect).
 
+The live tracking page, driven by a pair of WF-1000XM5:
+
+![The tracking page while the head moves](screenshots/tracking.gif)
+
+The 3D box, re-projected as the head turns:
+
+![The 3D box shifting with the head](screenshots/shadow-box.gif)
+
 ## Use
 
 Requires [uv](https://docs.astral.sh/uv/) and the earbuds connected to the Mac.
